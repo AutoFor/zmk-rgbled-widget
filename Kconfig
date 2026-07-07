@@ -25,9 +25,10 @@ if RGBLED_WIDGET_WS2812
 
 config LED_STRIP
     default y
-    
-config WS2812_STRIP
-    default y
+
+# Zephyr 4.x で WS2812_STRIP は WS2812_STRIP_SPI 等に分割された。
+# worldsemi,ws2812-spi が devicetree で有効なら WS2812_STRIP_SPI は
+# 自動で default y になるため、ここでの明示は不要。
 
 config RGBLED_WIDGET_LED_COUNT
     int "Number of LEDs in the strip"
