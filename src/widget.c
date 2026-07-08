@@ -497,11 +497,21 @@ static int indicate_battery_enhanced(void) {
     return ret;
 }
 
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+/* Cornix純正ファーム(公式マニュアル)準拠: BTチャンネル 0/1/2 = 緑/赤/青 */
+static uint8_t ble_profile_color(void) {
+    static const uint8_t profile_colors[] = {2 /* green */, 1 /* red */, 4 /* blue */};
+    uint8_t prof = zmk_ble_active_profile_index();
+    return prof < ARRAY_SIZE(profile_colors) ? profile_colors[prof] : 7 /* white */;
+}
+#endif
+
 static int indicate_connectivity_ws2812(void) {
     uint8_t color_idx = 0;
+    bool one_shot = false; /* 公式: 接続完了 = 一度点灯し、その後消灯 */
     struct animation_state pattern = {0};
     pattern.type = ANIM_STATIC;
-    
+
 #if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     switch (zmk_endpoint_get_selected().transport) {
     case ZMK_TRANSPORT_USB:
@@ -513,47 +523,54 @@ static int indicate_connectivity_ws2812(void) {
     default: // ZMK_TRANSPORT_BLE
 #if IS_ENABLED(CONFIG_ZMK_BLE)
         if (zmk_ble_active_profile_is_connected()) {
-            color_idx = CONFIG_RGBLED_WIDGET_CONN_COLOR_CONNECTED;
-            LOG_INF("BLE connected indication");
-        } else if (zmk_ble_active_profile_is_open()) {
-            color_idx = CONFIG_RGBLED_WIDGET_CONN_COLOR_ADVERTISING;
+            /* 公式: 接続完了 = チャンネル色で一度点灯→消灯 */
+            color_idx = ble_profile_color();
+            one_shot = true;
+            LOG_INF("BLE connected indication (ch color %d, one-shot)", color_idx);
+        } else {
+            /* 公式: ペアリング中(未接続含む) = チャンネル色でゆっくり点滅 */
+            color_idx = ble_profile_color();
             pattern.type = ANIM_PULSE;
             pattern.period_ms = 2000;
             pattern.start_color = color_idx;
-            LOG_INF("BLE advertising indication");
-        } else {
-            color_idx = CONFIG_RGBLED_WIDGET_CONN_COLOR_DISCONNECTED;
-            pattern.type = ANIM_BLINK;
-            pattern.period_ms = 1000;
-            pattern.start_color = color_idx;
-            pattern.end_color = 0;
-            LOG_INF("BLE disconnected indication");
+            LOG_INF("BLE pairing/disconnected indication (ch color %d)", color_idx);
         }
 #endif
         break;
     }
 #elif IS_ENABLED(CONFIG_ZMK_SPLIT_BLE)
+    /* 公式: 左右ユニット接続 = 青。接続成功=一度点灯→消灯 / 失敗=ゆっくり点滅 */
     if (zmk_split_bt_peripheral_is_connected()) {
-        color_idx = CONFIG_RGBLED_WIDGET_CONN_COLOR_CONNECTED;
-        LOG_INF("Enhanced peripheral connected indication");
+        color_idx = 4; /* blue */
+        one_shot = true;
+        LOG_INF("Peripheral connected indication (blue, one-shot)");
     } else {
-        color_idx = CONFIG_RGBLED_WIDGET_CONN_COLOR_DISCONNECTED;
-        pattern.type = ANIM_BLINK;
-        pattern.period_ms = 1000;
+        color_idx = 4; /* blue */
+        pattern.type = ANIM_PULSE;
+        pattern.period_ms = 2000;
         pattern.start_color = color_idx;
-        pattern.end_color = 0;
-        LOG_INF("Enhanced peripheral disconnected indication");
+        LOG_INF("Peripheral disconnected indication (blue slow blink)");
     }
 #endif
-    
-    int ret = set_status_led(STATUS_CONNECTIVITY, color_idx, 0, true);
-    
-    // Apply pattern if using spatial mapping
+
+    int ret;
     uint8_t conn_led = get_primary_led_for_status(STATUS_CONNECTIVITY);
-    if (conn_led < CONFIG_RGBLED_WIDGET_LED_COUNT && pattern.type != ANIM_STATIC) {
-        set_led_pattern(conn_led, &pattern);
+    if (one_shot && conn_led < CONFIG_RGBLED_WIDGET_LED_COUNT) {
+        /* 一度点灯→消灯: まず消灯の静的パターンでアニメを止め(base=消灯)、
+         * 共有タイムアウト1.5秒の一時点灯にすることで自動消灯させる */
+        struct animation_state off_static = {0};
+        off_static.type = ANIM_STATIC;
+        off_static.start_color = 0;
+        set_led_pattern(conn_led, &off_static);
+        ret = set_status_led(STATUS_CONNECTIVITY, color_idx, 1500, false);
+    } else {
+        ret = set_status_led(STATUS_CONNECTIVITY, color_idx, 0, true);
+        // Apply pattern if using spatial mapping
+        if (conn_led < CONFIG_RGBLED_WIDGET_LED_COUNT && pattern.type != ANIM_STATIC) {
+            set_led_pattern(conn_led, &pattern);
+        }
     }
-    
+
     return ret;
 }
 
